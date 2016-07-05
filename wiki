@@ -1,0 +1,74 @@
+#!/bin/bash
+
+# Show help text
+show_help () {
+    echo "Hilfe"
+}
+
+# Show version information
+show_version () {
+    echo "Version"
+}
+
+# Prepare some things
+SCRIPTNAME=$(basename "$0")
+
+# Prepare configuration array with default values
+typeset -A CONFIG
+CONFIG=(
+    [location]="."
+)
+
+if [[ -f "$HOME/.config/wiki.conf" ]]; then
+    # Read configuration values from default configuration file
+    while read line; do
+        if echo $line | grep -F = &>/dev/null
+        then
+            varname=$(echo "$line" | cut -d '=' -f 1)
+            CONFIG[$varname]=$(echo "$line" | cut -d '=' -f 2-)
+        fi
+    done < $HOME/.config/wiki.conf
+else
+    (>&2 echo "$SCRIPTNAME: Created default configuration file $HOME/.config/wiki.conf")
+    touch $HOME/.config/wiki.conf
+fi
+
+# Read configuration from command line
+OPTIND=1
+while getopts "vhc:l:" opt; do
+    case "$opt" in
+        h)
+            show_help
+            exit 0
+            ;;
+        v)
+            show_version
+            exit 0
+            ;;
+        c)
+            CONFIGFILE=$OPTARG
+            ;;
+        l)
+            CONFIG[location]=$OPTARG
+            ;;
+    esac
+done
+
+shift $((OPTIND-1))
+
+[ "$1" = "--" ] && shift
+
+if [[ ! -z "$CONFIGFILE" && -f "$CONFIGFILE" ]]; then
+    # Read configuration from specified file
+    while read line; do
+        if echo $line | grep -F = &>/dev/null
+        then
+            varname=$(echo "$line" | cut -d '=' -f 1)
+            CONFIG[$varname]=$(echo "$line" | cut -d '=' -f 2-)
+        fi
+    done < $CONFIGFILE
+elif [[ ! -f "$CONFIGFILE" ]]; then
+    (>&2 echo "$SCRIPTNAME: Unable to read configuration from $CONFIGFILE")
+fi
+
+echo "Location: " ${CONFIG[location]}
