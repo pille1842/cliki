@@ -1,0 +1,324 @@
+#!/bin/bash
+#
+# Cliki -- a command line interface wiki using Git and Markdown
+# Version 0.1
+# Copyright (C) 2016 Eric Haberstroh <eric@erixpage.de>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+# Show help text
+show_help () {
+    echo "Usage: $SCRIPTNAME [OPTION] OPERATION [PAGE]"
+    echo "A command line interface wiki using Git and Markdown"
+    echo " "
+    echo "OPTIONS:"
+    echo "  -c FILE        read configuration values from FILE. These values override"
+    echo "                 values in the default configuration file (~/.config/cliki.conf)"
+    echo "                 as well as those given on the command line!"
+    echo "  -l DIR         use DIR as the wiki's location (default: current directory)"
+    echo "  -s PROGRAM     use PROGRAM as the page viewer (default: less)"
+    echo "  -t PROGRAM     use PROGRAM as the page typesetter (default: pandoc)"
+    echo "  -e PROGRAM     use PROGRAM as the page editor (default: \$EDITOR)"
+    echo "  -n             when editing a page, don't commit the changes into Git"
+    echo "  -h             display this help and exit"
+    echo "  -v             output version information and exit"
+    echo " "
+    echo "OPERATIONS:"
+    echo "(a PAGE's filename is built by cliki by prepending the wiki's location that"
+    echo " was given in the configuration file or via the -l option, then appending the"
+    echo " .md suffix that specifies Markdown syntax.)"
+    echo "  s, show PAGE   typeset PAGE and view it"
+    echo "  e, edit PAGE   edit PAGE with the specified editor, then commit the changes"
+    echo "                 into the Git repository (unless option -n was specified)"
+    echo "  d, delete PAGE delete PAGE from the repository"
+    echo "  l, log [PAGE]  show either the complete commit log or, when PAGE is given,"
+    echo "                 the commits containing that particular page"
+    echo "  b, blame PAGE  do a 'git blame' for a page file"
+    echo " "
+    echo "cliki online help and sources: <https://github.com/pille1842/cliki/>"
+    echo "Please report bugs to <eric@erixpage.de> or on GitHub"
+}
+
+# Show version information
+show_version () {
+    echo "cliki 0.1 -- command line interface wiki using Git and Markdown"
+    echo "Copyright (C) 2016 Eric Haberstroh <eric@erixpage.de>"
+    echo "License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>"
+    echo "This is free software: you are free to change and redistribute it."
+    echo "There is NO WARRANTY, to the extent permitted by law."
+}
+
+# Output a default configuration file
+create_config () {
+    echo "## This configuration file belongs to cliki (https://github.com/pille1842/cliki)."
+    echo "## You can either change the values in this file to your liking, write a custom"
+    echo "## configuration file and use it with 'cliki -c', or give the configuration values"
+    echo "## on the command-line."
+    echo "##"
+    echo "## Report bugs to <eric@erixpage.de> or on GitHub."
+    echo ""
+    echo "## location: The location of the Git repository to use as your wiki. The default"
+    echo "## value is the current working directory. You may also use the same wiki from"
+    echo "## wherever you are calling cliki."
+    echo "## This is equal to the command-line option -l."
+    echo "#location=."
+    echo ""
+    echo "## viewer: The program used to view wiki pages. You can simply use less if your"
+    echo "## typesetter outputs plain text. Other examples may be 'lynx -stdin' when your"
+    echo "## typesetter outputs HTML documents. The default value is 'less'."
+    echo "## This is equal to the command-line option -s."
+    echo "#viewer=less"
+    echo ""
+    echo "## typesetter: A program which takes the name of a wiki page file as a command"
+    echo "## line argument, then outputs some formatted form of that page onto stdout to"
+    echo "## then be piped into the viewer. The default value is 'pandoc -t plain'. You"
+    echo "## need to have pandoc installed for cliki to work, or change this value (you"
+    echo "## may for example simply use 'cat' if you want to just display the plain file)."
+    echo "## This is equal to the command-line option -t."
+    echo "#typesetter=pandoc -t plain"
+    echo ""
+    echo "## editor: The program used to edit wiki files. It will be passed the name of the"
+    echo "## file as a command-line argument. By default, cliki assumes the value of your"
+    echo "## $EDITOR environment variable. In this configuration file, 'nano' is the default"
+    echo "## editor."
+    echo "## This is equal to the command-line option -e."
+    echo "#editor=nano"
+    echo ""
+    echo "## nocommit: Set this to either YES or NO (case-sensitive!). If set to NO, cliki"
+    echo "## will behave as default and immediately commit your changes into the repository."
+    echo "## If set to yes, cliki will not add/commit your changes."
+    echo "## Specifying the command-line option -n does the same as setting nocommit=YES here."
+    echo "#nocommit=NO"
+    echo ""
+}
+
+# Show the contents of a file with the viewer, formatted by the typesetter
+show_page () {
+    PAGEFILE="$1.md"
+    if [[ ! -f "$PAGEFILE" ]]; then
+        (>&2 echo "$SCRIPTNAME: Unable to open $PAGEFILE")
+        myexit 2
+    fi
+    ${CONFIG[typesetter]} $PAGEFILE | ${CONFIG[viewer]}
+}
+
+# Edit a file and commit it into the repository
+edit_page () {
+    PAGEFILE="$1.md"
+    if [[ -f "$PAGEFILE" ]]; then
+        COMMITMSG="Edited $1"
+    else
+        COMMITMSG="Created $1"
+    fi
+    TMPFILE=$(mktemp)
+    echo "$COMMITMSG" > $TMPFILE
+    ${CONFIG[editor]} $PAGEFILE
+    if [[ "${CONFIG[nocommit]}" == "NO" ]]; then
+        $GIT add $PAGEFILE
+        $GIT commit --allow-empty-message -t $TMPFILE
+    fi
+    rm $TMPFILE
+}
+
+# Delete a file from the repository
+delete_page () {
+    PAGEFILE="$1.md"
+    if [[ ! -f "$PAGEFILE" ]]; then
+        (>&2 echo "$SCRIPTNAME: $PAGEFILE does not exist")
+        myexit 2
+    fi
+    TMPFILE=$(mktemp)
+    echo "Deleted $1" > $TMPFILE
+    $GIT rm $PAGEFILE
+    $GIT commit --allow-empty-message -t $TMPFILE
+    rm $TMPFILE
+}
+
+blame_page () {
+    PAGEFILE="$1.md"
+    if [[ ! -f "$PAGEFILE" ]]; then
+        (>&2 echo "$SCRIPTNAME: $PAGEFILE does not exist")
+        myexit 2
+    fi
+    $GIT blame $PAGEFILE
+}
+
+# Show the log, either all of it or if specified changes for a specific file
+show_log () {
+    if [[ -z "$1" ]]; then
+        $GIT log
+    else
+        PAGEFILE="$1.md"
+        if [[ -f "$PAGEFILE" ]]; then
+            $GIT log "$PAGEFILE"
+        else
+            (>&2 echo "$SCRIPTNAME: $PAGEFILE does not exist")
+            myexit 2
+        fi
+    fi
+}
+
+# Pop the latest directory from the stack and exit with the given code
+myexit () {
+    popd > /dev/null 2>&1
+    exit $1
+}
+
+# Prepare some things
+SCRIPTNAME=$(basename "$0")
+GIT=$(which git)
+
+# Prepare configuration array with default values
+typeset -A CONFIG
+CONFIG=(
+    [location]="$(pwd)"
+    [viewer]="$(which less)"
+    [typesetter]="$(which pandoc) -t plain"
+    [editor]="$EDITOR"
+    [nocommit]="NO"
+)
+
+if [[ -f "$HOME/.config/cliki.conf" ]]; then
+    # Read configuration values from default configuration file
+    while read line; do
+        if echo $line | grep -F = &>/dev/null
+        then
+            if ! echo $line | grep -F \# &>/dev/null
+            then
+                varname=$(echo "$line" | cut -d '=' -f 1)
+                CONFIG[$varname]=$(echo "$line" | cut -d '=' -f 2-)
+            fi
+        fi
+    done < $HOME/.config/cliki.conf
+else
+    create_config > $HOME/.config/cliki.conf
+    (>&2 echo "$SCRIPTNAME: Created default configuration file $HOME/.config/wiki.conf")
+fi
+
+# Read configuration from command line
+OPTIND=1
+while getopts "vhnc:l:s:t:e:" opt; do
+    case "$opt" in
+        h)
+            show_help
+            myexit 0
+            ;;
+        v)
+            show_version
+            myexit 0
+            ;;
+        n)
+            CONFIG[nocommit]=YES
+            ;;
+        c)
+            CONFIGFILE=$OPTARG
+            ;;
+        l)
+            CONFIG[location]=$OPTARG
+            ;;
+        s)
+            CONFIG[viewer]=$OPTARG
+            ;;
+        t)
+            CONFIG[typesetter]=$OPTARG
+            ;;
+        e)
+            CONFIG[editor]=$OPTARG
+            ;;
+    esac
+done
+
+shift $((OPTIND-1))
+
+[ "$1" = "--" ] && shift
+
+if [[ ! -z "$CONFIGFILE" && -f "$CONFIGFILE" ]]; then
+    # Read configuration from specified file
+    while read line; do
+        if echo $line | grep -F = &>/dev/null
+        then
+            if ! echo $line | grep -F \# &>/dev/null
+            then
+                varname=$(echo "$line" | cut -d '=' -f 1)
+                CONFIG[$varname]=$(echo "$line" | cut -d '=' -f 2-)
+            fi
+        fi
+    done < $CONFIGFILE
+elif [[ ! -z "$CONFIGFILE" && ! -f "$CONFIGFILE" ]]; then
+    (>&2 echo "$SCRIPTNAME: Unable to read configuration from $CONFIGFILE")
+    myexit 2
+fi
+
+# Check that the specified location exists
+if [[ ! -d "${CONFIG[location]}" ]]; then
+    (>&2 echo "$SCRIPTNAME: ${CONFIG[location]} does not exist")
+    myexit 2
+fi
+
+# Change directory to location
+pushd ${CONFIG[location]} > /dev/null 2>&1
+
+# Check that at least one argument (the operation) is present
+if [[ -z "$1" ]]; then
+    (>&2 echo "$SCRIPTNAME: You must specify an operation. See $SCRIPTNAME -h")
+    myexit 1
+fi
+
+# Check that the location contains a git repository
+if [[ ! -d "${CONFIG[location]}/.git" ]]; then
+    (>&2 echo "$SCRIPTNAME: ${CONFIG[location]} is not a Git repository. Please prepare the directory with git init")
+    myexit 3
+fi
+
+case "$1" in
+    s|show)
+        if [[ -z "$2" ]]; then
+            (>&2 echo "$SCRIPTNAME: Operation 'show' demands a page name. See $SCRIPTNAME -h")
+            myexit 1
+        fi
+        show_page "$2"
+        ;;
+    e|edit)
+        if [[ -z "$2" ]]; then
+            (>&2 echo "$SCRIPTNAME: Operation 'edit' demands a page name. See $SCRIPTNAME -h")
+            myexit 1
+        fi
+        # Check that an editor has been specified
+        if [[ -z "${CONFIG[editor]}" ]]; then
+            (>&2 echo "$SCRIPTNAME: Please specify an editor, either via the \$EDITOR environment variable or the -e option.")
+            myexit 4
+        fi
+        edit_page "$2"
+        ;;
+    d|delete)
+        if [[ -z "$2" ]]; then
+            (>&2 echo "$SCRIPTNAME: Operation 'delete' demands a page name. See $SCRIPTNAME -h")
+            myexit 1
+        fi
+        delete_page "$2"
+        ;;
+    l|log)
+        show_log "$2"
+        ;;
+    b|blame)
+        if [[ -z "$2" ]]; then
+            (>&2 echo "$SCRIPTNAME: Operation 'blame' demands a page name. See $SCRIPTNAME -h")
+            myexit 1
+        fi
+        blame_page "$2"
+        ;;
+esac
+
+myexit 0
