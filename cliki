@@ -204,7 +204,7 @@ if [[ -f "$HOME/.config/cliki.conf" ]]; then
     done < $HOME/.config/cliki.conf
 else
     create_config > $HOME/.config/cliki.conf
-    (>&2 echo "$SCRIPTNAME: Created default configuration file $HOME/.config/wiki.conf")
+    (>&2 echo "$SCRIPTNAME: Created default configuration file $HOME/.config/cliki.conf")
 fi
 
 # Read configuration from command line
